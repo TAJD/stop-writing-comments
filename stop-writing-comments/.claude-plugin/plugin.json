@@ -1,0 +1,12 @@
+{
+  "name": "stop-writing-comments",
+  "description": "Stops Claude writing code comments: every edit must reduce the net comment count. Comments are written by humans.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Tom Dickson"
+  },
+  "homepage": "https://github.com/TAJD/stop-writing-comments",
+  "repository": "https://github.com/TAJD/stop-writing-comments",
+  "license": "MIT",
+  "keywords": ["hooks", "comments", "code-quality", "pretooluse"]
+}

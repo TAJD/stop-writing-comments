@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node --test tests/*.test.mjs
+        shell: bash
+
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Validate plugin manifests
+        run: |
+          node -e '
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync(".claude-plugin/marketplace.json"));
+            for (const p of m.plugins) {
+              const root = p.source;
+              const plugin = JSON.parse(fs.readFileSync(root + "/.claude-plugin/plugin.json"));
+              if (plugin.name !== p.name) throw new Error("plugin name mismatch: " + p.name);
+              const hooks = JSON.parse(fs.readFileSync(root + "/hooks/hooks.json"));
+              for (const entries of Object.values(hooks.hooks)) for (const e of entries) for (const h of e.hooks) {
+                const rel = h.command.match(/\$\{CLAUDE_PLUGIN_ROOT\}\/([^" ]+)/)[1];
+                if (!fs.existsSync(root + "/" + rel)) throw new Error("hook script missing: " + rel);
+              }
+              if (!fs.existsSync(root + "/README.md")) throw new Error("README missing");
+            }
+            console.log("manifests ok");
+          '

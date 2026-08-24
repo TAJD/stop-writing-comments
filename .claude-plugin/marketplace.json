@@ -1,0 +1,16 @@
+{
+  "name": "stop-writing-comments",
+  "description": "Claude Code hook that stops Claude writing code comments: edits must reduce the net comment count. Comments are written by humans.",
+  "owner": {
+    "name": "Tom Dickson"
+  },
+  "plugins": [
+    {
+      "name": "stop-writing-comments",
+      "source": "./stop-writing-comments",
+      "description": "PreToolUse hook: deny Edit/Write/MultiEdit unless the net comment line count decreases. Zero dependencies.",
+      "category": "productivity",
+      "keywords": ["hooks", "comments", "code-quality", "pretooluse"]
+    }
+  ]
+}
