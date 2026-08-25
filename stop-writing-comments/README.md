@@ -43,6 +43,16 @@ For each `Edit`, `Write` or `MultiEdit`, comment lines are counted in the old te
 
 There is a second check on top of the net count. The old and new text are line-diffed, and **no hunk may add more comment lines than it removes**. Deleting three comments at the top of a function and slipping a new one in at the bottom nets negative but is still refused, because the new comment sits in a hunk that removed nothing. Condensing a five-line block into two lines in the same place is fine. Very large edits (over 3 000 lines a side) skip the diff and use the net rule alone.
 
+## Bash
+
+Edits made through the shell would otherwise walk straight past the rule, so `Bash` is covered twice.
+
+**Before it runs.** A command that rewrites a source file in place is refused and Claude is pointed at Edit/Write: `sed -i`, `perl -pi`, `>` / `>>` / `tee` into a file with a recognised extension, and inline `python` / `node` / `ruby` / `pwsh` scripts (`-c`, `-e`, heredoc) that call a write API (`open(…, 'w')`, `write_text`, `writeFile`, `Set-Content`, `Out-File`, `File.write`). Redirects to `.txt`, `.log`, `/dev/null` and the like are left alone.
+
+**After it runs.** Anything that got through — a formatter, a codegen step, a script on disk — is audited. Before the command, the hook snapshots the working tree with git (tracked and untracked files; the real index is never touched). Afterwards it diffs the tree against that snapshot and runs the same net and per-hunk rule over every changed source file. A file that gained comment lines produces a `block` decision naming the file and lines; Claude is told to revert them with Edit. Reflows that keep the count (a formatter re-wrapping a comment) pass.
+
+The audit needs a git repository. Outside one, Bash is only checked for in-place edits.
+
 ## What counts as a comment
 
 | family | extensions |

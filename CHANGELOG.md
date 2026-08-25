@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 — 2026-08-25
+
+- Bash commands that rewrite source files in place (`sed -i`, `perl -pi`, `>`/`>>`/`tee` into a source file, inline `python`/`node`/`ruby`/`pwsh` scripts that call a write API) are denied with a pointer to Edit/Write, where the comment rule applies.
+- Every other Bash command is audited afterwards: a git snapshot of the working tree (tracked and untracked) is taken before the command runs and diffed against it after. Files that gained comment lines, net or in any hunk, produce a `block` decision naming the file and lines. Same-count reflows (formatters) pass. Outside a git repository nothing happens.
+- `hooks.json` now matches `Bash` on `PreToolUse` and `PostToolUse`; timeout raised to 10 s for the snapshot.
+
 ## 0.2.0 — 2026-08-25
 
 - Per-hunk accounting: old and new text are line-diffed and no hunk may add more comment lines than it removes. Closes the "delete three, add one elsewhere" loophole. Each `MultiEdit` edit is judged on its own.

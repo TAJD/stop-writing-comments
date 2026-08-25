@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 /**
- * Claude Code PreToolUse hook: deny Edit/Write/MultiEdit unless the net
- * comment line count decreases, and no hunk adds more comment lines than it
- * removes. Comments are written by humans. Fails open on any error.
+ * Claude Code hook: deny Edit/Write/MultiEdit unless the net comment line
+ * count decreases, and no hunk adds more comment lines than it removes.
+ * Bash commands that rewrite source files in place are denied; every other
+ * Bash command is audited afterwards against a git snapshot taken before it
+ * ran. Comments are written by humans. Fails open on any error.
  * See README.md for the policy, exemptions and configuration.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -273,6 +279,138 @@ const advisory = (blocks) =>
   `Existing large comment at lines ${blocks.map(([a, b]) => `${a}–${b}`).join(', ')}; `
   + 'offer the user a more concise version (net count must still decrease).';
 
+const IN_PLACE_RE = /(^|[\s;&|(])(sed\s+(-[a-zA-Z]*i|--in-place)|perl\s+-[a-zA-Z]*i)/m;
+const INTERP_RE = /(^|[\s;&|(])(python3?|py|node|ruby|perl|pwsh|powershell)(\.exe)?\s+(-[ceE]\b|-Command\b|-\s*<<|<<)/m;
+const WRITE_CALL_RE = /\b(writeFileSync|writeFile|write_text|write_bytes|Set-Content|Add-Content|Out-File|File\.write|IO\.write)\b|\bopen\([^)]*['"][wax]\+?b?['"]/;
+
+const extAlternation = () =>
+  [...new Set([...FAMILY_BY_EXT.keys(), ...Object.keys(state.extraExtensions)])].join('|');
+
+export function bashWriteIntent(command) {
+  if (typeof command !== 'string') return null;
+  const m = command.match(IN_PLACE_RE);
+  if (m) return m[2].split(/\s+/).slice(0, 2).join(' ');
+  const exts = extAlternation();
+  const target = `["']?([^\\s"'|;&<>]+\\.(${exts}))(?=["']?(\\s|$|[;&|)]))`;
+  const redirect = command.match(new RegExp(`(^|[^>&\\d<])>{1,2}\\s*${target}`, 'm'));
+  if (redirect && familyFor(redirect[2]) !== null) return `redirect to ${redirect[2]}`;
+  const tee = command.match(new RegExp(`(^|[\\s;&|(])tee\\s+(-[ai]\\s+)*${target}`, 'm'));
+  if (tee && familyFor(tee[3]) !== null) return `tee ${tee[3]}`;
+  if (INTERP_RE.test(command) && WRITE_CALL_RE.test(command)) return 'a script that writes a file';
+  return null;
+}
+
+function gitOut(cwd, args, extra = {}) {
+  return execFileSync('git', args, {
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 4000, ...extra,
+  }).trim();
+}
+
+const normalise = (s) => s.replace(/\r\n/g, '\n');
+
+export function snapshotTree(cwd) {
+  let root;
+  let indexPath;
+  try {
+    root = gitOut(cwd, ['rev-parse', '--show-toplevel']);
+    indexPath = resolve(cwd, gitOut(cwd, ['rev-parse', '--git-path', 'index']));
+  } catch {
+    return null;
+  }
+  const tmpIndex = join(tmpdir(), `swc-index-${process.pid}-${Date.now()}`);
+  try {
+    if (existsSync(indexPath)) copyFileSync(indexPath, tmpIndex);
+    const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
+    gitOut(root, ['add', '-A', '--', '.'], { env });
+    return gitOut(root, ['write-tree'], { env });
+  } catch {
+    return null;
+  } finally {
+    if (existsSync(tmpIndex)) unlinkSync(tmpIndex);
+  }
+}
+
+export function auditChanges(cwd, tree) {
+  let root;
+  const changed = new Set();
+  try {
+    root = gitOut(cwd, ['rev-parse', '--show-toplevel']);
+    for (const p of gitOut(root, ['diff-index', '--name-only', tree]).split('\n')) if (p) changed.add(p);
+    for (const p of gitOut(root, ['ls-files', '--others', '--exclude-standard']).split('\n')) if (p) changed.add(p);
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const rel of [...changed].sort()) {
+    const abs = join(root, rel);
+    if (familyFor(abs) === null || !existsSync(abs) || !statSync(abs).isFile()) continue;
+    let oldText = '';
+    try {
+      oldText = execFileSync('git', ['show', `${tree}:${rel}`], {
+        cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 4000,
+      });
+    } catch {
+      oldText = '';
+    }
+    const newText = readFileSync(abs, 'utf8');
+    if (normalise(oldText) === normalise(newText)) continue;
+    const oldLines = analyse(oldText, abs);
+    const newLines = analyse(newText, abs);
+    const violations = hunkViolations(oldText, newText, abs);
+    if (newLines.length <= oldLines.length && violations.length === 0) continue;
+    out.push({ path: rel, lines: violations.length ? violations : newLines });
+  }
+  return out;
+}
+
+const snapshotFile = (session) =>
+  join(tmpdir(), 'stop-writing-comments', `${String(session || 'default').replace(/[^\w.-]/g, '_')}.json`);
+
+function preBash(data, mode) {
+  const command = data.tool_input?.command;
+  if (typeof command !== 'string') return;
+  const cwd = data.cwd || process.cwd();
+  const intent = bashWriteIntent(command);
+  if (intent) {
+    log(process.env.STOP_WRITING_COMMENTS_LOG, 'bash', 0, 0, mode === 'warn' ? 'warn-deny' : 'deny');
+    if (mode === 'warn') return;
+    const reason = `This command edits files in place (${intent}). `
+      + 'File edits go through Edit/Write so the comment policy can see them; use those tools instead.';
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+      hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason,
+    } }) + '\n');
+    return;
+  }
+  const file = snapshotFile(data.session_id);
+  const tree = existsSync(cwd) ? snapshotTree(cwd) : null;
+  if (tree) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ tree, cwd }));
+  } else if (existsSync(file)) {
+    unlinkSync(file);
+  }
+}
+
+function postBash(data, mode) {
+  const file = snapshotFile(data.session_id);
+  if (!existsSync(file)) return;
+  let snap;
+  try {
+    snap = JSON.parse(readFileSync(file, 'utf8'));
+  } finally {
+    unlinkSync(file);
+  }
+  const cwd = data.cwd || snap.cwd;
+  const found = auditChanges(cwd, snap.tree);
+  if (!found.length) return;
+  const outcome = mode === 'warn' ? 'warn-deny' : 'deny';
+  for (const f of found) log(process.env.STOP_WRITING_COMMENTS_LOG, f.path, 0, f.lines.length, outcome);
+  if (mode === 'warn') return;
+  const list = found.map((f) => `${f.path} (line${f.lines.length > 1 ? 's' : ''} ${ranges(f.lines)})`).join('; ');
+  const reason = `The command added comment lines to ${list}. ${GUIDANCE} Revert them with Edit before continuing.`;
+  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+}
+
 function oldNew(tool, inp) {
   const path = inp.file_path;
   if (tool === 'Write') return [[existsSync(path) ? readFileSync(path, 'utf8') : '', inp.content]];
@@ -289,6 +427,13 @@ function log(path, file, oldN, newN, outcome) {
 export function main() {
   const data = JSON.parse(readFileSync(0, 'utf8'));
   const tool = data?.tool_name;
+  if (tool === 'Bash') {
+    const cfg = loadConfig(data.cwd || process.cwd());
+    configure(cfg);
+    const mode = (process.env.STOP_WRITING_COMMENTS_MODE || cfg.mode || 'deny').toLowerCase();
+    if (mode === 'off') return;
+    return data.hook_event_name === 'PostToolUse' ? postBash(data, mode) : preBash(data, mode);
+  }
   if (!['Edit', 'Write', 'MultiEdit'].includes(tool)) return;
   const inp = data.tool_input || {};
   const path = inp.file_path;
