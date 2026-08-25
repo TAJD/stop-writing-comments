@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 /**
  * Claude Code PreToolUse hook: deny Edit/Write/MultiEdit unless the net
- * comment line count decreases. Comments are written by humans.
- * Fails open on any error. See README.md for the policy and exemptions.
+ * comment line count decreases, and no hunk adds more comment lines than it
+ * removes. Comments are written by humans. Fails open on any error.
+ * See README.md for the policy, exemptions and configuration.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
-import { basename, dirname, extname, resolve } from 'node:path';
+import { basename, dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const MARKER = 'HUMAN-APPROVED';
+export const CONFIG_FILE = join('.claude', 'stop-writing-comments.json');
+const DIFF_LINE_CAP = 3000;
 
 const FAMILY_BY_EXT = new Map();
 for (const e of 'py rb ex exs sh bash zsh yaml yml toml tf pl'.split(' ')) FAMILY_BY_EXT.set(e, 'hash');
@@ -31,16 +34,47 @@ const GO_DECL_RE = /^\s*(func|type|var|const|package)\b/;
 const TRIPLE_RE = /"""|'''/g;
 const DOC_LINE_RE = /^\s*(\/\/\/|\/\/!)/;
 
+const state = { extraExtensions: {}, extraDirectives: [], skip: [] };
+
+export function configure(cfg = {}) {
+  state.extraExtensions = cfg.extensions && typeof cfg.extensions === 'object' ? cfg.extensions : {};
+  state.extraDirectives = Array.isArray(cfg.directives)
+    ? cfg.directives.filter((d) => typeof d === 'string').map((d) => new RegExp(d, 'i'))
+    : [];
+  state.skip = Array.isArray(cfg.skip) ? cfg.skip.filter((s) => typeof s === 'string') : [];
+}
+
+export function loadConfig(startDir) {
+  let dir = resolve(startDir);
+  for (;;) {
+    const candidate = join(dir, CONFIG_FILE);
+    if (existsSync(candidate)) {
+      try {
+        return JSON.parse(readFileSync(candidate, 'utf8'));
+      } catch {
+        return {};
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return {};
+    dir = parent;
+  }
+}
+
 export function familyFor(path) {
+  const slashed = path.replace(/\\/g, '/');
+  if (state.skip.some((s) => slashed.includes(s))) return null;
   const name = basename(path);
   if (SKIP_NAMES.has(name) || name.startsWith('.env')) return null;
   const byName = FAMILY_BY_NAME[name.toLowerCase()];
   if (byName) return byName;
-  return FAMILY_BY_EXT.get(extname(path).slice(1).toLowerCase()) ?? null;
+  const ext = extname(path).slice(1).toLowerCase();
+  return state.extraExtensions[ext] ?? FAMILY_BY_EXT.get(ext) ?? null;
 }
 
 const stripStrings = (line) => line.replace(STRING_RE, '""');
 const splitLines = (text) => text.split(/\r?\n/);
+const isDirective = (line) => DIRECTIVE_RE.test(line) || state.extraDirectives.some((re) => re.test(line));
 
 function hashLines(lines) {
   const out = [];
@@ -136,7 +170,7 @@ export function analyse(text, path) {
   const lines = splitLines(text);
   let idx = rawCommentLines(text, path);
   idx = idx.filter((i) => !(i === 0 && lines[i].startsWith('#!')));
-  idx = idx.filter((i) => !DIRECTIVE_RE.test(lines[i]));
+  idx = idx.filter((i) => !isDirective(lines[i]));
   idx = dropLicenseHeader(idx, lines);
   return idx.map((i) => i + 1);
 }
@@ -155,6 +189,50 @@ export function largeBlocks(text, path, minLines = 3) {
   return blocks;
 }
 
+function diffOps(a, b) {
+  const n = a.length;
+  const m = b.length;
+  const lcs = new Int32Array((n + 1) * (m + 1));
+  const at = (i, j) => i * (m + 1) + j;
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      lcs[at(i, j)] = a[i] === b[j] ? lcs[at(i + 1, j + 1)] + 1 : Math.max(lcs[at(i + 1, j)], lcs[at(i, j + 1)]);
+    }
+  }
+  const ops = [];
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) { ops.push(['=', i, j]); i++; j++; }
+    else if (j < m && (i >= n || lcs[at(i, j + 1)] >= lcs[at(i + 1, j)])) { ops.push(['+', i, j]); j++; }
+    else { ops.push(['-', i, j]); i++; }
+  }
+  return ops;
+}
+
+export function hunkViolations(oldText, newText, path) {
+  const a = splitLines(oldText);
+  const b = splitLines(newText);
+  if (a.length > DIFF_LINE_CAP || b.length > DIFF_LINE_CAP) return [];
+  const oldC = new Set(analyse(oldText, path));
+  const newC = new Set(analyse(newText, path));
+  const violations = [];
+  let removed = 0;
+  let added = [];
+  const flush = () => {
+    if (added.length > removed) violations.push(...added);
+    removed = 0;
+    added = [];
+  };
+  for (const [op, i, j] of diffOps(a, b)) {
+    if (op === '=') flush();
+    else if (op === '-' && oldC.has(i + 1)) removed++;
+    else if (op === '+' && newC.has(j + 1)) added.push(j + 1);
+  }
+  flush();
+  return violations;
+}
+
 function ranges(nums) {
   const parts = [];
   let start = null;
@@ -169,33 +247,35 @@ function ranges(nums) {
   return parts.join(', ');
 }
 
-export function decide(oldLines, newLines, mode) {
-  if (oldLines.length === 0 && newLines.length === 0) return { action: 'allow', reason: '', wouldDeny: false };
-  if (newLines.length < oldLines.length) return { action: 'allow', reason: '', wouldDeny: false };
-  const reason =
-    `Net comment count must decrease (old ${oldLines.length}, new ${newLines.length}). `
-    + `New/changed comments on lines ${ranges(newLines)} of the new text. `
-    + 'Remove them — comments are written by humans. '
-    + 'Put the explanation in the commit message or PR description instead. '
-    + 'If a comment is genuinely essential, tell the user what you wanted to annotate and let them add it '
-    + `(they can mark it ${MARKER} to exempt it).`;
-  return { action: mode === 'warn' ? 'allow' : 'deny', reason, wouldDeny: true };
+const GUIDANCE =
+  'Remove them — comments are written by humans. '
+  + 'Put the explanation in the commit message or PR description instead. '
+  + 'If a comment is genuinely essential, tell the user what you wanted to annotate and let them add it '
+  + `(they can mark it ${MARKER} to exempt it).`;
+
+export function decide(oldLines, newLines, mode, violations = []) {
+  const netOk = newLines.length < oldLines.length || (oldLines.length === 0 && newLines.length === 0);
+  if (netOk && violations.length === 0) return { action: 'allow', reason: '', wouldDeny: false };
+  const parts = [];
+  if (!netOk) {
+    parts.push(`Net comment count must decrease (old ${oldLines.length}, new ${newLines.length}). `
+      + `New/changed comments on lines ${ranges(newLines)} of the new text.`);
+  }
+  if (violations.length) {
+    parts.push(`The change adds comment lines (lines ${ranges(violations)} of the new text) `
+      + 'without removing at least as many in the same place.');
+  }
+  parts.push(GUIDANCE);
+  return { action: mode === 'warn' ? 'allow' : 'deny', reason: parts.join(' '), wouldDeny: true };
 }
 
 const advisory = (blocks) =>
   `Existing large comment at lines ${blocks.map(([a, b]) => `${a}–${b}`).join(', ')}; `
   + 'offer the user a more concise version (net count must still decrease).';
 
-function readFile(path) {
-  return readFileSync(path, 'utf8');
-}
-
 function oldNew(tool, inp) {
   const path = inp.file_path;
-  if (tool === 'Write') {
-    const old = existsSync(path) ? readFile(path) : '';
-    return [[old, inp.content]];
-  }
+  if (tool === 'Write') return [[existsSync(path) ? readFileSync(path, 'utf8') : '', inp.content]];
   if (tool === 'MultiEdit') return inp.edits.map((e) => [e.old_string, e.new_string]);
   return [[inp.old_string, inp.new_string]];
 }
@@ -207,23 +287,34 @@ function log(path, file, oldN, newN, outcome) {
 }
 
 export function main() {
-  const mode = (process.env.STOP_WRITING_COMMENTS_MODE || 'deny').toLowerCase();
-  if (mode === 'off') return;
   const data = JSON.parse(readFileSync(0, 'utf8'));
   const tool = data?.tool_name;
   if (!['Edit', 'Write', 'MultiEdit'].includes(tool)) return;
   const inp = data.tool_input || {};
   const path = inp.file_path;
-  if (!path || familyFor(path) === null) return;
+  if (!path) return;
+
+  const cfg = loadConfig(data.cwd || dirname(resolve(path)));
+  configure(cfg);
+  const mode = (process.env.STOP_WRITING_COMMENTS_MODE || cfg.mode || 'deny').toLowerCase();
+  if (mode === 'off' || familyFor(path) === null) return;
+
   const pairs = oldNew(tool, inp);
   if (pairs.some(([o, n]) => typeof o !== 'string' || typeof n !== 'string')) return;
-  const oldLines = pairs.flatMap(([o]) => analyse(o, path));
-  const newLines = pairs.flatMap(([, n]) => analyse(n, path));
-  const d = decide(oldLines, newLines, mode);
+  const perEdit = pairs.map(([o, n]) => {
+    const oldLines = analyse(o, path);
+    const newLines = analyse(n, path);
+    return { oldLines, newLines, decision: decide(oldLines, newLines, mode, hunkViolations(o, n, path)) };
+  });
+  const oldLines = perEdit.flatMap((e) => e.oldLines);
+  const newLines = perEdit.flatMap((e) => e.newLines);
+  const failing = perEdit.find((e) => e.decision.wouldDeny);
+  const d = failing ? failing.decision : { action: 'allow', reason: '', wouldDeny: false };
 
+  const touchesComments = oldLines.length > 0 || newLines.length > 0;
   let fileText = tool === 'Write' ? pairs[0][0] : null;
-  if (fileText === null && existsSync(path) && statSync(path).isFile()) fileText = readFile(path);
-  const blocks = fileText ? largeBlocks(fileText, path) : [];
+  if (fileText === null && existsSync(path) && statSync(path).isFile()) fileText = readFileSync(path, 'utf8');
+  const blocks = touchesComments && fileText ? largeBlocks(fileText, path) : [];
 
   const outcome = d.wouldDeny && d.action === 'allow' ? 'warn-deny' : d.action;
   log(process.env.STOP_WRITING_COMMENTS_LOG, path, oldLines.length, newLines.length, outcome);

@@ -1,5 +1,7 @@
 # stop-writing-comments
 
+[![CI](https://github.com/TAJD/stop-writing-comments/actions/workflows/ci.yml/badge.svg)](https://github.com/TAJD/stop-writing-comments/actions/workflows/ci.yml)
+
 A Claude Code hook that stops Claude writing code comments.
 
 **The policy:** comments are written by humans. Claude may delete comments or condense them, but every edit it makes must *reduce* the net number of comment lines. An edit that adds a comment, or rewrites one at the same size, is refused before it touches disk, and Claude is told to put the explanation in the commit message or PR description instead.
@@ -23,7 +25,7 @@ When an edit is refused:
 
 Claude retries without the comments. If it thinks one is load-bearing it will say so; you decide.
 
-When an edit is allowed but the file contains a comment block of three or more lines, Claude is nudged to offer you a shorter version.
+When an edit that touches comments is allowed and the file contains a comment block of three or more lines, Claude is nudged to offer you a shorter version. Edits that don't touch comments stay silent.
 
 ## The rule
 
@@ -37,7 +39,9 @@ For each `Edit`, `Write` or `MultiEdit`, comment lines are counted in the old te
 | 2 | 0 | allow |
 | 0 | 0 | allow, silent |
 
-`Write` compares against the file on disk (empty for a new file). `MultiEdit` sums across its edits, so a batch that deletes three comments and adds one nets negative and passes. Net-down is the contract.
+`Write` compares against the file on disk (empty for a new file). Each edit in a `MultiEdit` is judged on its own.
+
+There is a second check on top of the net count. The old and new text are line-diffed, and **no hunk may add more comment lines than it removes**. Deleting three comments at the top of a function and slipping a new one in at the bottom nets negative but is still refused, because the new comment sits in a hunk that removed nothing. Condensing a five-line block into two lines in the same place is fine. Very large edits (over 3 000 lines a side) skip the diff and use the net rule alone.
 
 ## What counts as a comment
 
@@ -67,14 +71,38 @@ Put `HUMAN-APPROVED` on a comment line and it is invisible to the hook, on both 
 
 ## Configuration
 
-Environment variables, settable in `settings.json` under `"env"`:
+### Per project
+
+Put a `.claude/stop-writing-comments.json` at the project root (the hook walks up from the working directory to find it). Every key is optional:
+
+```json
+{
+  "mode": "deny",
+  "directives": ["SAFETY:", "nolint"],
+  "extensions": { "vue": "slash", "nix": "hash" },
+  "skip": ["vendor/", "generated/"]
+}
+```
+
+| key | meaning |
+|-----|---------|
+| `mode` | `deny`, `warn` (allow but log), `off` |
+| `directives` | extra regexes; a comment line matching any of them is never counted |
+| `extensions` | extra file extensions mapped to a comment family: `hash`, `slash`, `dash`, `xml`, `ps1` |
+| `skip` | path substrings; matching files are never analysed |
+
+A malformed file is ignored (defaults apply). Rust projects will want `"directives": ["SAFETY:"]` so Clippy's mandated `// SAFETY:` comments pass.
+
+### Environment
+
+Settable in `settings.json` under `"env"`; these override the project file.
 
 | variable | values | default |
 |----------|--------|---------|
-| `STOP_WRITING_COMMENTS_MODE` | `deny`, `warn` (allow but log), `off` | `deny` |
+| `STOP_WRITING_COMMENTS_MODE` | `deny`, `warn`, `off` | `deny` |
 | `STOP_WRITING_COMMENTS_LOG` | path; one tab-separated line per analysed edit | unset (no log) |
 
-To switch it off for one project, disable the plugin in that project's `.claude/settings.json` `enabledPlugins`.
+To switch the plugin off entirely for one project, disable it in that project's `.claude/settings.json` `enabledPlugins`.
 
 ## Failure mode
 
@@ -83,7 +111,6 @@ The hook fails open. Malformed input, an unreadable file, an unknown extension, 
 ## Non-goals
 
 - Judging comment *content*. Whether a surviving comment explains WHY rather than WHAT is still on you and your `CLAUDE.md`.
-- Per-hunk accounting. If the netting loophole gets abused it can be tightened; so far it hasn't.
 - Rewriting Claude's edit silently to strip comments. Denial with a reason teaches the retry; silent rewriting hides it.
 
 ## Development

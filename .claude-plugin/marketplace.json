@@ -9,8 +9,15 @@
       "name": "stop-writing-comments",
       "source": "./stop-writing-comments",
       "description": "PreToolUse hook: deny Edit/Write/MultiEdit unless the net comment line count decreases. Zero dependencies.",
-      "category": "productivity",
-      "keywords": ["hooks", "comments", "code-quality", "pretooluse"]
+      "category": "development",
+      "keywords": [
+        "hooks",
+        "comments",
+        "code-quality",
+        "pretooluse",
+        "guardrails"
+      ],
+      "displayName": "Stop Writing Comments"
     }
   ]
 }

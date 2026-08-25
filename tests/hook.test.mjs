@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { analyse, decide, largeBlocks } from '../stop-writing-comments/hooks/stop-writing-comments.mjs';
+import * as hook from '../stop-writing-comments/hooks/stop-writing-comments.mjs';
+const { analyse, decide, largeBlocks } = hook;
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'stop-writing-comments', 'hooks', 'stop-writing-comments.mjs');
 
@@ -150,17 +151,6 @@ test('main: write existing file with fewer comments allows', () => {
   assert.equal(r.stdout.trim(), '');
 });
 
-test('main: multiedit netting negative allows', () => {
-  const p = join(tmp(), 'm.ts');
-  writeFileSync(p, '// a\nx\n// b\nw\ny\n');
-  const r = run({ tool_name: 'MultiEdit', tool_input: { file_path: p, edits: [
-    { old_string: '// a\nx\n// b\nw', new_string: 'x\nw' },
-    { old_string: 'y', new_string: 'y // new' },
-  ] } });
-  assert.equal(r.code, 0);
-  assert.equal(r.stdout.trim(), '');
-});
-
 test('main: multiedit netting positive denies', () => {
   const r = run({ tool_name: 'MultiEdit', tool_input: { file_path: join(tmp(), 'm.ts'), edits: [
     { old_string: 'x', new_string: 'x // one' },
@@ -273,4 +263,101 @@ test('main: latency on 2000-line write under 1s', () => {
   const t = performance.now();
   run({ tool_name: 'Write', tool_input: { file_path: join(tmp(), 'big.ts'), content } });
   assert.ok(performance.now() - t < 1000);
+});
+
+test('main: advisory silent when edit does not touch comments', () => {
+  const p = join(tmp(), 'hdr.ts');
+  writeFileSync(p, '// one\n// two\n// three\nconst a = 1;\n');
+  const r = run(edit(p, 'const a = 1;', 'const a = 2;'));
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('main: multiedit with one adding edit denies even when net negative', () => {
+  const p = join(tmp(), 'm.ts');
+  writeFileSync(p, '// a\nx\n// b\nw\ny\n');
+  const r = run({ tool_name: 'MultiEdit', tool_input: { file_path: p, edits: [
+    { old_string: '// a\nx\n// b\nw', new_string: 'x\nw' },
+    { old_string: 'y', new_string: 'y // new' },
+  ] } });
+  assert.equal(outOf(r).permissionDecision, 'deny');
+  assert.ok(outOf(r).permissionDecisionReason.includes('same place'));
+});
+
+test('main: multiedit where every edit decreases allows', () => {
+  const r = run({ tool_name: 'MultiEdit', tool_input: { file_path: join(tmp(), 'm.ts'), edits: [
+    { old_string: '// a\nx', new_string: 'x' },
+    { old_string: '// b\n// c\ny', new_string: '// bc\ny' },
+  ] } });
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('main: single edit that deletes comments in one place and adds in another denies', () => {
+  const r = run(edit(join(tmp(), 'a.ts'), '// a\n// b\n// c\nx\ny', 'x\ny // new'));
+  const out = outOf(r);
+  assert.equal(out.permissionDecision, 'deny');
+  assert.ok(out.permissionDecisionReason.includes('2'));
+});
+
+test('hunkViolations: condensation in one hunk is not a violation', () => {
+  assert.deepEqual(hook.hunkViolations('# 1\n# 2\n# 3\n# 4\n# 5\nx = 1\n', '# 1-5\n# rest\nx = 1\n', 'a.py'), []);
+});
+
+test('hunkViolations: added comment far from deletions is reported at its new-text line', () => {
+  assert.deepEqual(hook.hunkViolations('// a\n// b\nx\ny\nz\n', 'x\ny\nz // why\n', 'a.ts'), [3]);
+});
+
+function project(config) {
+  const root = tmp();
+  mkdirSync(join(root, '.claude'));
+  writeFileSync(join(root, '.claude', 'stop-writing-comments.json'), JSON.stringify(config));
+  return root;
+}
+
+test('config: mode off from project config silences the hook', () => {
+  const root = project({ mode: 'off' });
+  const r = run({ ...edit(join(root, 'a.ts'), 'x', 'x // what'), cwd: root });
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('config: env mode overrides project config', () => {
+  const root = project({ mode: 'off' });
+  const r = run({ ...edit(join(root, 'a.ts'), 'x', 'x // what'), cwd: root }, { STOP_WRITING_COMMENTS_MODE: 'deny' });
+  assert.equal(outOf(r).permissionDecision, 'deny');
+});
+
+test('config: extra directives are exempt', () => {
+  const root = project({ directives: ['SAFETY:'] });
+  const r = run({ ...edit(join(root, 'a.rs'), 'x', '// SAFETY: ptr is non-null\nx'), cwd: root });
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('config: extra extensions map to a family', () => {
+  const root = project({ extensions: { foo: 'slash' } });
+  const r = run({ ...edit(join(root, 'a.foo'), 'x', 'x // what'), cwd: root });
+  assert.equal(outOf(r).permissionDecision, 'deny');
+});
+
+test('config: skip path substrings are ignored', () => {
+  const root = project({ skip: ['vendor/'] });
+  mkdirSync(join(root, 'vendor'));
+  const r = run({ ...edit(join(root, 'vendor', 'a.ts'), 'x', 'x // what'), cwd: root });
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('config: found by walking up from a nested cwd', () => {
+  const root = project({ mode: 'off' });
+  const nested = join(root, 'src', 'deep');
+  mkdirSync(nested, { recursive: true });
+  const r = run({ ...edit(join(nested, 'a.ts'), 'x', 'x // what'), cwd: nested });
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('config: malformed config file fails open to defaults', () => {
+  const root = tmp();
+  mkdirSync(join(root, '.claude'));
+  writeFileSync(join(root, '.claude', 'stop-writing-comments.json'), '{not json');
+  const r = run({ ...edit(join(root, 'a.ts'), 'x', 'x // what'), cwd: root });
+  assert.equal(outOf(r).permissionDecision, 'deny');
 });
