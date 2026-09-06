@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2 — 2026-09-06
+
+- Fixed a false-positive class in the post-Bash audit: a snapshot taken before the command is now discarded (with a skip log entry, no block) if the git worktree root or `HEAD` has moved by the time the command finishes — e.g. the command `cd`'d into a different worktree, or ran a `git checkout`/`fetch` mixed with a non-plumbing verb such as `git status`, which fell outside the existing `git`-plumbing-only fast path. Previously either case could diff the new tree's pre-existing, human-authored comments against the old snapshot and misattribute them to the command.
+- The audit still fires on a genuine same-repo, same-`HEAD` comment addition; only tree/HEAD movement is exempted.
+
 ## 0.3.1 — 2026-09-06
 
 - Regex literals containing `/` (e.g. `route.path.replace(/^\//, '')`) are no longer misdetected as `//` line comments in the `slash` family.

@@ -307,3 +307,40 @@ test('main: pre bash snapshot leaves the real index untouched', () => {
   run(bash('x', d, 'PreToolUse', session()));
   assert.equal(git(d, 'status', '--porcelain'), '?? u.py');
 });
+
+test('main: post bash is silent when cwd moved to a different worktree (DEV-57)', () => {
+  const d = repo();
+  git(d, 'branch', 'other');
+  const wt = join(dirname(d), `swc-wt-${process.pid}-${++seq}`);
+  git(d, 'worktree', 'add', '-q', wt, 'other');
+  const s = session();
+  run(bash('git log --oneline', d, 'PreToolUse', s));
+  const r = run(bash('git status -sb', wt, 'PostToolUse', s));
+  assert.equal(r.stdout, '');
+  git(d, 'worktree', 'remove', '--force', wt);
+});
+
+test('main: post bash is silent when a mixed command moves HEAD to another branch (DEV-57)', () => {
+  const d = repo();
+  git(d, 'branch', 'other');
+  git(d, 'checkout', '-q', 'other');
+  writeFileSync(join(d, 'a.py'), 'x = 1  # why\n# pre-existing on other\ny = 2\n');
+  git(d, 'commit', '-qam', 'other branch content');
+  git(d, 'checkout', '-q', 'master');
+  const s = session();
+  run(bash('git status -sb', d, 'PreToolUse', s));
+  git(d, 'checkout', '-q', 'other');
+  const r = run(bash('git status -sb && git fetch && git checkout other', d, 'PostToolUse', s));
+  assert.equal(r.stdout, '');
+});
+
+test('main: post bash still blocks when the tree and HEAD have not moved (DEV-57)', () => {
+  const d = repo();
+  const s = session();
+  run(bash('npm run fake-codegen', d, 'PreToolUse', s));
+  writeFileSync(join(d, 'a.py'), 'x = 1  # why\n# added by fake codegen\ny = 2\n');
+  const r = run(bash('npm run fake-codegen', d, 'PostToolUse', s));
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, 'block');
+  assert.match(out.reason, /a\.py/);
+});

@@ -321,6 +321,14 @@ function gitOut(cwd, args, extra = {}) {
 
 const normalise = (s) => s.replace(/\r\n/g, '\n');
 
+export function repoIdentity(cwd) {
+  try {
+    return { root: gitOut(cwd, ['rev-parse', '--show-toplevel']), head: gitOut(cwd, ['rev-parse', 'HEAD']) };
+  } catch {
+    return null;
+  }
+}
+
 export function headBlobFor(path) {
   try {
     const fileDir = dirname(resolve(path));
@@ -421,8 +429,9 @@ function preBash(data, mode) {
   const file = snapshotFile(data.session_id);
   const tree = existsSync(cwd) ? snapshotTree(cwd) : null;
   if (tree) {
+    const identity = repoIdentity(cwd);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ tree, cwd }));
+    writeFileSync(file, JSON.stringify({ tree, cwd, root: identity?.root ?? null, head: identity?.head ?? null }));
   } else if (existsSync(file)) {
     unlinkSync(file);
   }
@@ -438,6 +447,11 @@ function postBash(data, mode) {
     unlinkSync(file);
   }
   const cwd = data.cwd || snap.cwd;
+  const identity = repoIdentity(cwd);
+  if (!identity || identity.root !== snap.root || identity.head !== snap.head) {
+    log(process.env.STOP_WRITING_COMMENTS_LOG, snap.cwd, 0, 0, 'skip-tree-moved');
+    return;
+  }
   const found = auditChanges(cwd, snap.tree);
   if (!found.length) return;
   const outcome = mode === 'warn' ? 'warn-deny' : 'deny';
