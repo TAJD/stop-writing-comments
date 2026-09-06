@@ -452,7 +452,7 @@ function relaxForMovedOrRestoredComments(decision, newLines, newText, path, cwd,
   const nSplit = splitLines(newText);
   const headText = isNewFile ? null : headBlobFor(cwd, path);
   if (headText !== null) {
-    const headLineSet = new Set(splitLines(headText));
+    const headLineSet = new Set(splitLines(normalise(headText)));
     if (newLines.every((ln) => headLineSet.has(nSplit[ln - 1]))) {
       return { action: 'allow', reason: '', wouldDeny: false };
     }
