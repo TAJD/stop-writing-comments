@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5 — 2026-10-05
+
+- A `Bash` heredoc that redirects or `tee`s its content into a file (e.g. `cat <<EOF > script.sh`) is no longer denied pre-emptively as an "in-place edit." It now goes through the same pre/post snapshot audit as any other command, which already diffs the resulting file correctly. `sed -i`/`perl -i` and interpreter one-liners that call a write API are still denied — those aren't affected by this change.
+
 ## 0.3.4 — 2026-10-05
 
 - Bash redirects and `tee` into the temp directory (`$TMPDIR`, `$TEMP`, `/tmp`, or any path under `os.tmpdir()`, which covers the Claude Code session scratchpad) are no longer pre-denied. Those files sit outside any repo, so the post-command audit never sees them and the deny only forced scratch scripts through Edit/Write. Paths containing `/../` are not treated as temp. `sed -i`/`perl -i` stay denied everywhere.
