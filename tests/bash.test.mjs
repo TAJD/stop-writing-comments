@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as hook from '../stop-writing-comments/hooks/stop-writing-comments.mjs';
-const { bashWriteIntent, snapshotTree, auditChanges } = hook;
+const { bashWriteIntent, isGitPlumbingOnly, snapshotTree, auditChanges } = hook;
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'stop-writing-comments', 'hooks', 'stop-writing-comments.mjs');
 
@@ -259,9 +259,88 @@ test('main: post bash outside a git repo is silent', () => {
   rmSync(d, { recursive: true, force: true });
 });
 
+const plumbingCommands = [
+  'git checkout main',
+  'git checkout -b feature',
+  'git mv a.py b.py',
+  'git switch main',
+  'git restore a.py',
+  'git stash pop',
+  'git checkout main && git checkout -b feature',
+];
+
+for (const c of plumbingCommands) {
+  test(`isGitPlumbingOnly recognises: ${c}`, () => {
+    assert.equal(isGitPlumbingOnly(c), true);
+  });
+}
+
+const nonPlumbingCommands = [
+  'git commit -m "x"',
+  'echo "// x" >> a.ts',
+  'git checkout main && echo "// x" >> a.ts',
+  'pnpm test',
+];
+
+for (const c of nonPlumbingCommands) {
+  test(`isGitPlumbingOnly rejects: ${c}`, () => {
+    assert.equal(isGitPlumbingOnly(c), false);
+  });
+}
+
+test('main: git checkout revealing pre-existing comments is not flagged', () => {
+  const d = repo();
+  git(d, 'branch', 'other');
+  git(d, 'checkout', '-q', 'other');
+  writeFileSync(join(d, 'a.py'), 'x = 1  # why\n# newly visible on this branch\ny = 2\n');
+  git(d, 'commit', '-qam', 'other branch content');
+  git(d, 'checkout', '-q', 'master');
+  const s = session();
+  run(bash('git checkout other', d, 'PreToolUse', s));
+  git(d, 'checkout', '-q', 'other');
+  assert.equal(run(bash('git checkout other', d, 'PostToolUse', s)).stdout, '');
+});
+
 test('main: pre bash snapshot leaves the real index untouched', () => {
   const d = repo();
   writeFileSync(join(d, 'u.py'), 'u = 1\n');
   run(bash('x', d, 'PreToolUse', session()));
   assert.equal(git(d, 'status', '--porcelain'), '?? u.py');
+});
+
+test('main: post bash is silent when cwd moved to a different worktree (DEV-57)', () => {
+  const d = repo();
+  git(d, 'branch', 'other');
+  const wt = join(dirname(d), `swc-wt-${process.pid}-${++seq}`);
+  git(d, 'worktree', 'add', '-q', wt, 'other');
+  const s = session();
+  run(bash('git log --oneline', d, 'PreToolUse', s));
+  const r = run(bash('git status -sb', wt, 'PostToolUse', s));
+  assert.equal(r.stdout, '');
+  git(d, 'worktree', 'remove', '--force', wt);
+});
+
+test('main: post bash is silent when a mixed command moves HEAD to another branch (DEV-57)', () => {
+  const d = repo();
+  git(d, 'branch', 'other');
+  git(d, 'checkout', '-q', 'other');
+  writeFileSync(join(d, 'a.py'), 'x = 1  # why\n# pre-existing on other\ny = 2\n');
+  git(d, 'commit', '-qam', 'other branch content');
+  git(d, 'checkout', '-q', 'master');
+  const s = session();
+  run(bash('git status -sb', d, 'PreToolUse', s));
+  git(d, 'checkout', '-q', 'other');
+  const r = run(bash('git status -sb && git fetch && git checkout other', d, 'PostToolUse', s));
+  assert.equal(r.stdout, '');
+});
+
+test('main: post bash still blocks when the tree and HEAD have not moved (DEV-57)', () => {
+  const d = repo();
+  const s = session();
+  run(bash('npm run fake-codegen', d, 'PreToolUse', s));
+  writeFileSync(join(d, 'a.py'), 'x = 1  # why\n# added by fake codegen\ny = 2\n');
+  const r = run(bash('npm run fake-codegen', d, 'PostToolUse', s));
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, 'block');
+  assert.match(out.reason, /a\.py/);
 });

@@ -1,10 +1,10 @@
 {
   "name": "stop-writing-comments",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
   },
   "engines": {
     "node": ">=20"

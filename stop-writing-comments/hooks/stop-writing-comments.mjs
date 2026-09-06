@@ -12,7 +12,9 @@ import {
   appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, extname, join, resolve } from 'node:path';
+import {
+  basename, dirname, extname, join, resolve,
+} from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const MARKER = 'HUMAN-APPROVED';
@@ -36,6 +38,8 @@ const DIRECTIVE_RE = new RegExp(
 );
 const LICENSE_RE = /copyright|licen[sc]e|SPDX/i;
 const STRING_RE = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g;
+const REGEX_LITERAL_RE = /(?<=[=(,:!&|?[;]|^|\breturn\b)\s*\/(?:\\.|\[(?:\\.|[^\]\\])*]|[^/\\\n])+\/[a-z]*/g;
+const HTML_PLACEHOLDER_RE = /^<!--\s*[\w.:-]+\s*-->$/;
 const GO_DECL_RE = /^\s*(func|type|var|const|package)\b/;
 const TRIPLE_RE = /"""|'''/g;
 const DOC_LINE_RE = /^\s*(\/\/\/|\/\/!)/;
@@ -102,7 +106,7 @@ function hashLines(lines) {
   return out;
 }
 
-function blockLines(lines, lineOpen, blockOpen, blockClose, docOpen = []) {
+function blockLines(lines, lineOpen, blockOpen, blockClose, docOpen = [], extraStrip = (x) => x) {
   const out = [];
   let inBlock = false;
   let doc = false;
@@ -113,7 +117,7 @@ function blockLines(lines, lineOpen, blockOpen, blockClose, docOpen = []) {
       if (line.includes(blockClose)) inBlock = false;
       continue;
     }
-    const s = stripStrings(line);
+    const s = extraStrip(stripStrings(line));
     const start = s.indexOf(blockOpen);
     if (start !== -1) {
       doc = docOpen.some((d) => s.startsWith(d, start));
@@ -157,7 +161,8 @@ function rawCommentLines(text, path) {
     case 'hash':
       return hashLines(lines);
     case 'slash': {
-      let idx = blockLines(lines, '//', '/*', '*/', ['/**']).filter((i) => !DOC_LINE_RE.test(lines[i]));
+      const stripRegex = (s) => s.replace(REGEX_LITERAL_RE, '""');
+      let idx = blockLines(lines, '//', '/*', '*/', ['/**'], stripRegex).filter((i) => !DOC_LINE_RE.test(lines[i]));
       if (ext === 'go') idx = dropGoDocComments(idx, lines);
       return idx;
     }
@@ -177,6 +182,7 @@ export function analyse(text, path) {
   let idx = rawCommentLines(text, path);
   idx = idx.filter((i) => !(i === 0 && lines[i].startsWith('#!')));
   idx = idx.filter((i) => !isDirective(lines[i]));
+  idx = idx.filter((i) => !HTML_PLACEHOLDER_RE.test(lines[i].trim()));
   idx = dropLicenseHeader(idx, lines);
   return idx.map((i) => i + 1);
 }
@@ -279,12 +285,19 @@ const advisory = (blocks) =>
   `Existing large comment at lines ${blocks.map(([a, b]) => `${a}–${b}`).join(', ')}; `
   + 'offer the user a more concise version (net count must still decrease).';
 
+const GIT_PLUMBING_RE = /^git\s+(checkout|switch|mv|restore|merge|rebase|cherry-pick|pull|reset|stash(\s+(apply|pop))?)\b/;
 const IN_PLACE_RE = /(^|[\s;&|(])(sed\s+(-[a-zA-Z]*i|--in-place)|perl\s+-[a-zA-Z]*i)/m;
 const INTERP_RE = /(^|[\s;&|(])(python3?|py|node|ruby|perl|pwsh|powershell)(\.exe)?\s+(-[ceE]\b|-Command\b|-\s*<<|<<)/m;
 const WRITE_CALL_RE = /\b(writeFileSync|writeFile|write_text|write_bytes|Set-Content|Add-Content|Out-File|File\.write|IO\.write)\b|\bopen\([^)]*['"][wax]\+?b?['"]/;
 
 const extAlternation = () =>
   [...new Set([...FAMILY_BY_EXT.keys(), ...Object.keys(state.extraExtensions)])].join('|');
+
+export function isGitPlumbingOnly(command) {
+  if (typeof command !== 'string') return false;
+  const parts = command.split(/&&|\|\||;/).map((s) => s.trim()).filter(Boolean);
+  return parts.length > 0 && parts.every((p) => GIT_PLUMBING_RE.test(p));
+}
 
 export function bashWriteIntent(command) {
   if (typeof command !== 'string') return null;
@@ -302,11 +315,42 @@ export function bashWriteIntent(command) {
 
 function gitOut(cwd, args, extra = {}) {
   return execFileSync('git', args, {
-    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 4000, ...extra,
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 10000, ...extra,
   }).trim();
 }
 
 const normalise = (s) => s.replace(/\r\n/g, '\n');
+
+export function repoIdentity(cwd) {
+  try {
+    return { root: gitOut(cwd, ['rev-parse', '--show-toplevel']), head: gitOut(cwd, ['rev-parse', 'HEAD']) };
+  } catch {
+    return null;
+  }
+}
+
+export function headBlobFor(path) {
+  try {
+    const fileDir = dirname(resolve(path));
+    const prefix = gitOut(fileDir, ['rev-parse', '--show-prefix']);
+    const rel = (prefix + basename(path)).replace(/\\/g, '/');
+    return gitOut(fileDir, ['show', `HEAD:${rel}`]);
+  } catch {
+    return null;
+  }
+}
+
+export function commentLineMovedFromElsewhere(cwd, text) {
+  const trimmed = text.trim();
+  if (trimmed.length < 3) return false;
+  try {
+    const root = gitOut(cwd, ['rev-parse', '--show-toplevel']);
+    gitOut(root, ['grep', '-F', '-q', '--', trimmed]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function snapshotTree(cwd) {
   let root;
@@ -381,11 +425,13 @@ function preBash(data, mode) {
     } }) + '\n');
     return;
   }
+  if (isGitPlumbingOnly(command)) return;
   const file = snapshotFile(data.session_id);
   const tree = existsSync(cwd) ? snapshotTree(cwd) : null;
   if (tree) {
+    const identity = repoIdentity(cwd);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ tree, cwd }));
+    writeFileSync(file, JSON.stringify({ tree, cwd, root: identity?.root ?? null, head: identity?.head ?? null }));
   } else if (existsSync(file)) {
     unlinkSync(file);
   }
@@ -401,6 +447,11 @@ function postBash(data, mode) {
     unlinkSync(file);
   }
   const cwd = data.cwd || snap.cwd;
+  const identity = repoIdentity(cwd);
+  if (!identity || identity.root !== snap.root || identity.head !== snap.head) {
+    log(process.env.STOP_WRITING_COMMENTS_LOG, snap.cwd, 0, 0, 'skip-tree-moved');
+    return;
+  }
   const found = auditChanges(cwd, snap.tree);
   if (!found.length) return;
   const outcome = mode === 'warn' ? 'warn-deny' : 'deny';
@@ -409,6 +460,22 @@ function postBash(data, mode) {
   const list = found.map((f) => `${f.path} (line${f.lines.length > 1 ? 's' : ''} ${ranges(f.lines)})`).join('; ');
   const reason = `The command added comment lines to ${list}. ${GUIDANCE} Revert them with Edit before continuing.`;
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+}
+
+function relaxForMovedOrRestoredComments(decision, newLines, newText, path, cwd, isNewFile) {
+  if (newLines.length === 0) return decision;
+  const nSplit = splitLines(newText);
+  const headText = isNewFile ? null : headBlobFor(path);
+  if (headText !== null) {
+    const headLineSet = new Set(splitLines(normalise(headText)));
+    if (newLines.every((ln) => headLineSet.has(nSplit[ln - 1]))) {
+      return { action: 'allow', reason: '', wouldDeny: false };
+    }
+  }
+  if (isNewFile && newLines.every((ln) => commentLineMovedFromElsewhere(cwd, nSplit[ln - 1]))) {
+    return { action: 'allow', reason: '', wouldDeny: false };
+  }
+  return decision;
 }
 
 function oldNew(tool, inp) {
@@ -446,10 +513,14 @@ export function main() {
 
   const pairs = oldNew(tool, inp);
   if (pairs.some(([o, n]) => typeof o !== 'string' || typeof n !== 'string')) return;
+  const cwd = data.cwd || dirname(resolve(path));
+  const isNewFile = tool === 'Write' && !existsSync(path);
   const perEdit = pairs.map(([o, n]) => {
     const oldLines = analyse(o, path);
     const newLines = analyse(n, path);
-    return { oldLines, newLines, decision: decide(oldLines, newLines, mode, hunkViolations(o, n, path)) };
+    let decision = decide(oldLines, newLines, mode, hunkViolations(o, n, path));
+    if (decision.wouldDeny) decision = relaxForMovedOrRestoredComments(decision, newLines, n, path, cwd, isNewFile);
+    return { oldLines, newLines, decision };
   });
   const oldLines = perEdit.flatMap((e) => e.oldLines);
   const newLines = perEdit.flatMap((e) => e.newLines);

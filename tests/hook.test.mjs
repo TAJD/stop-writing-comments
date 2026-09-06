@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -35,6 +35,11 @@ const analyseCases = [
   ['key: 1 # why\n# top\n', 'a.yml', [1, 2]],
   ['SELECT 1; -- why\n-- top\n', 'a.sql', [1, 2]],
   ['<!-- one\n two -->\n<p>x</p>\n', 'a.html', [1, 2]],
+  ['<!--app-head-->\n<!--app-html-->\n', 'a.html', []],
+  ['<!--app-head-->\n<!-- this explains something -->\n', 'a.html', [2]],
+  ["route.path.replace(/^\\//, '');\n", 'a.mjs', []],
+  ["route.path.replace(/^\\//, '');\n// real comment\n", 'a.mjs', [2]],
+  ['const a = x / y / z;\n', 'a.ts', []],
   ['<# block\n more #>\n# line\nWrite-Host 1\n', 'a.ps1', [1, 2, 3]],
   ['# HUMAN-APPROVED keep this\n# other\n', 'a.py', [2]],
   ['// Copyright 2026 Foo\n// Licensed under MIT\n\n// real\n', 'a.ts', [4]],
@@ -125,6 +130,67 @@ test('main: edit removing comment allows silently', () => {
   const r = run(edit(p, '// a\n// b\nx', '// a\nx'));
   assert.equal(r.code, 0);
   assert.equal(r.stdout.trim(), '');
+});
+
+function gitRepo() {
+  const d = tmp();
+  execFileSync('git', ['init', '-q'], { cwd: d });
+  execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: d });
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: d });
+  execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: d });
+  return d;
+}
+const gitCommitAll = (d, msg) => {
+  execFileSync('git', ['add', '-A'], { cwd: d });
+  execFileSync('git', ['commit', '-q', '-m', msg], { cwd: d });
+};
+
+test('main: restoring a comment still present in HEAD is allowed', () => {
+  const d = gitRepo();
+  const p = join(d, 'a.py');
+  writeFileSync(p, 'x = 1\n# why this bucket is shared\ny = 2\n');
+  gitCommitAll(d, 'init');
+  writeFileSync(p, 'x = 1\ny = 2\n');
+  const r = run(edit(p, 'x = 1\ny = 2\n', 'x = 1\n# why this bucket is shared\ny = 2\n'));
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('main: restoring a comment NOT present in HEAD is still denied', () => {
+  const d = gitRepo();
+  const p = join(d, 'a.py');
+  writeFileSync(p, 'x = 1\ny = 2\n');
+  gitCommitAll(d, 'init');
+  const r = run(edit(p, 'x = 1\ny = 2\n', 'x = 1\n# brand new, never committed\ny = 2\n'));
+  const out = outOf(r);
+  assert.equal(out.permissionDecision, 'deny');
+});
+
+test('main: Write to a new file with a comment moved from elsewhere in the repo is allowed', () => {
+  const d = gitRepo();
+  writeFileSync(join(d, 'page.tsx'), '// Epley formula: reps-to-1RM conversion, approximate above 10 reps\nexport const FAQS = []\n');
+  gitCommitAll(d, 'init');
+  const newPath = join(d, 'faqs.ts');
+  const r = run({
+    tool_name: 'Write',
+    tool_input: {
+      file_path: newPath,
+      content: '// Epley formula: reps-to-1RM conversion, approximate above 10 reps\nexport const FAQS = []\n',
+    },
+  });
+  assert.equal(r.stdout.trim(), '');
+});
+
+test('main: Write to a new file with a genuinely new comment is still denied', () => {
+  const d = gitRepo();
+  writeFileSync(join(d, 'other.ts'), 'export const x = 1;\n');
+  gitCommitAll(d, 'init');
+  const newPath = join(d, 'faqs.ts');
+  const r = run({
+    tool_name: 'Write',
+    tool_input: { file_path: newPath, content: '// freshly authored explanation\nexport const FAQS = []\n' },
+  });
+  const out = outOf(r);
+  assert.equal(out.permissionDecision, 'deny');
 });
 
 test('main: same-count rewrite denies', () => {

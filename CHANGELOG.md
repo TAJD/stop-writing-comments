@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2 — 2026-09-06
+
+- Fixed a false-positive class in the post-Bash audit: a snapshot taken before the command is now discarded (with a skip log entry, no block) if the git worktree root or `HEAD` has moved by the time the command finishes — e.g. the command `cd`'d into a different worktree, or ran a `git checkout`/`fetch` mixed with a non-plumbing verb such as `git status`, which fell outside the existing `git`-plumbing-only fast path. Previously either case could diff the new tree's pre-existing, human-authored comments against the old snapshot and misattribute them to the command.
+- The audit still fires on a genuine same-repo, same-`HEAD` comment addition; only tree/HEAD movement is exempted.
+
+## 0.3.1 — 2026-09-06
+
+- Regex literals containing `/` (e.g. `route.path.replace(/^\//, '')`) are no longer misdetected as `//` line comments in the `slash` family.
+- HTML/XML comments that are a single bare token (e.g. `<!--app-head-->`) are treated as template placeholders, not prose, and exempted; multi-word or multi-line HTML comments are still flagged as before.
+- `Bash` commands that are entirely `git checkout`/`switch`/`mv`/`restore`/`merge`/`rebase`/`cherry-pick`/`pull`/`reset`/`stash apply`/`stash pop` (chained with `&&`/`;`/`||`) skip the pre/post snapshot and audit — these change working-tree content without the agent authoring anything, so they can no longer be flagged for "adding" pre-existing comments.
+- `Write` to a brand-new file no longer denies unconditionally when it contains comments: if every added comment line's text also exists elsewhere in the repo's `HEAD` tree, it's treated as moved, not authored.
+- `Edit`/`Write`/`MultiEdit` no longer deny restoring a comment that still exists in the file's `HEAD`-committed blob — reverting an incidental deletion is no longer permanent.
+
 ## 0.3.0 — 2026-08-25
 
 - Bash commands that rewrite source files in place (`sed -i`, `perl -pi`, `>`/`>>`/`tee` into a source file, inline `python`/`node`/`ruby`/`pwsh` scripts that call a write API) are denied with a pointer to Edit/Write, where the comment rule applies.
