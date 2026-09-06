@@ -315,7 +315,7 @@ export function bashWriteIntent(command) {
 
 function gitOut(cwd, args, extra = {}) {
   return execFileSync('git', args, {
-    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 4000, ...extra,
+    cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 10000, ...extra,
   }).trim();
 }
 
