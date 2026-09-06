@@ -9,7 +9,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import {
-  appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync,
+  appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
@@ -321,10 +321,18 @@ function gitOut(cwd, args, extra = {}) {
 
 const normalise = (s) => s.replace(/\r\n/g, '\n');
 
+const realOrSelf = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
 export function headBlobFor(cwd, path) {
   try {
-    const root = gitOut(cwd, ['rev-parse', '--show-toplevel']);
-    const rel = relative(root, resolve(path)).replace(/\\/g, '/');
+    const root = realOrSelf(gitOut(cwd, ['rev-parse', '--show-toplevel']));
+    const rel = relative(root, realOrSelf(resolve(path))).replace(/\\/g, '/');
     return gitOut(root, ['show', `HEAD:${rel}`]);
   } catch {
     return null;
