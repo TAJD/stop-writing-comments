@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import * as hook from '../stop-writing-comments/hooks/stop-writing-comments.mjs';
-const { bashWriteIntent, snapshotTree, auditChanges } = hook;
+const { bashWriteIntent, isGitPlumbingOnly, snapshotTree, auditChanges } = hook;
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'stop-writing-comments', 'hooks', 'stop-writing-comments.mjs');
 
@@ -257,6 +257,48 @@ test('main: post bash outside a git repo is silent', () => {
   writeFileSync(join(d, 'a.py'), '# nowhere\n');
   assert.equal(run(bash('x', d, 'PostToolUse', s)).stdout, '');
   rmSync(d, { recursive: true, force: true });
+});
+
+const plumbingCommands = [
+  'git checkout main',
+  'git checkout -b feature',
+  'git mv a.py b.py',
+  'git switch main',
+  'git restore a.py',
+  'git stash pop',
+  'git checkout main && git checkout -b feature',
+];
+
+for (const c of plumbingCommands) {
+  test(`isGitPlumbingOnly recognises: ${c}`, () => {
+    assert.equal(isGitPlumbingOnly(c), true);
+  });
+}
+
+const nonPlumbingCommands = [
+  'git commit -m "x"',
+  'echo "// x" >> a.ts',
+  'git checkout main && echo "// x" >> a.ts',
+  'pnpm test',
+];
+
+for (const c of nonPlumbingCommands) {
+  test(`isGitPlumbingOnly rejects: ${c}`, () => {
+    assert.equal(isGitPlumbingOnly(c), false);
+  });
+}
+
+test('main: git checkout revealing pre-existing comments is not flagged', () => {
+  const d = repo();
+  git(d, 'branch', 'other');
+  git(d, 'checkout', '-q', 'other');
+  writeFileSync(join(d, 'a.py'), 'x = 1  # why\n# newly visible on this branch\ny = 2\n');
+  git(d, 'commit', '-qam', 'other branch content');
+  git(d, 'checkout', '-q', 'master');
+  const s = session();
+  run(bash('git checkout other', d, 'PreToolUse', s));
+  git(d, 'checkout', '-q', 'other');
+  assert.equal(run(bash('git checkout other', d, 'PostToolUse', s)).stdout, '');
 });
 
 test('main: pre bash snapshot leaves the real index untouched', () => {

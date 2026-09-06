@@ -41,6 +41,11 @@ For each `Edit`, `Write` or `MultiEdit`, comment lines are counted in the old te
 
 `Write` compares against the file on disk (empty for a new file). Each edit in a `MultiEdit` is judged on its own.
 
+Two exemptions on top of the table above, both requiring an exact text match so they can't be used to smuggle new prose past the rule:
+
+- **Restoring a comment.** If every newly-added comment line's text already exists in the file's `HEAD`-committed blob, the edit is allowed — reverting an incidental deletion doesn't require `HUMAN-APPROVED`.
+- **Moving a comment into a new file.** A `Write` to a path that doesn't exist yet is normally judged against an empty "old" file, so any comment at all would deny. If every added comment line's text is found (via `git grep -F`) somewhere else in the repo's tracked files, it's treated as moved rather than authored and allowed.
+
 There is a second check on top of the net count. The old and new text are line-diffed, and **no hunk may add more comment lines than it removes**. Deleting three comments at the top of a function and slipping a new one in at the bottom nets negative but is still refused, because the new comment sits in a hunk that removed nothing. Condensing a five-line block into two lines in the same place is fine. Very large edits (over 3 000 lines a side) skip the diff and use the net rule alone.
 
 ## Bash
@@ -52,6 +57,8 @@ Edits made through the shell would otherwise walk straight past the rule, so `Ba
 **After it runs.** Anything that got through — a formatter, a codegen step, a script on disk — is audited. Before the command, the hook snapshots the working tree with git (tracked and untracked files; the real index is never touched). Afterwards it diffs the tree against that snapshot and runs the same net and per-hunk rule over every changed source file. A file that gained comment lines produces a `block` decision naming the file and lines; Claude is told to revert them with Edit. Reflows that keep the count (a formatter re-wrapping a comment) pass.
 
 The audit needs a git repository. Outside one, Bash is only checked for in-place edits.
+
+Commands that are entirely `git checkout`/`switch`/`mv`/`restore`/`merge`/`rebase`/`cherry-pick`/`pull`/`reset`/`stash apply`/`stash pop` (chained with `&&`, `;` or `||`) skip the snapshot and audit outright — they change working-tree content by moving between already-committed states, not by authoring anything, so there is nothing for the audit to correctly attribute.
 
 ## What counts as a comment
 
@@ -73,7 +80,7 @@ Anything else, including Markdown and JSON, is never analysed. `.gitignore`, `.e
 - A license or copyright header at the top of a file
 - Any comment line containing `HUMAN-APPROVED`
 
-String stripping is deliberately crude (a `//` inside a string literal is usually ignored, not always). The exemptions absorb the common false positives and `HUMAN-APPROVED` covers the rest.
+String stripping is deliberately crude (a `//` inside a string literal is usually ignored, not always). A `//` inside a JS/TS-style regex literal (`/^\//`) is also excluded so a route pattern isn't mistaken for a line comment. An HTML/XML comment that is a single bare token with no whitespace (`<!--app-head-->`) is treated as a template placeholder, not prose, and excluded; a multi-word or multi-line HTML comment is still counted. The exemptions absorb the common false positives and `HUMAN-APPROVED` covers the rest.
 
 ## The escape hatch
 

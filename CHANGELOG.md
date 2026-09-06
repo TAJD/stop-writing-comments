@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1 — 2026-09-06
+
+- Regex literals containing `/` (e.g. `route.path.replace(/^\//, '')`) are no longer misdetected as `//` line comments in the `slash` family.
+- HTML/XML comments that are a single bare token (e.g. `<!--app-head-->`) are treated as template placeholders, not prose, and exempted; multi-word or multi-line HTML comments are still flagged as before.
+- `Bash` commands that are entirely `git checkout`/`switch`/`mv`/`restore`/`merge`/`rebase`/`cherry-pick`/`pull`/`reset`/`stash apply`/`stash pop` (chained with `&&`/`;`/`||`) skip the pre/post snapshot and audit — these change working-tree content without the agent authoring anything, so they can no longer be flagged for "adding" pre-existing comments.
+- `Write` to a brand-new file no longer denies unconditionally when it contains comments: if every added comment line's text also exists elsewhere in the repo's `HEAD` tree, it's treated as moved, not authored.
+- `Edit`/`Write`/`MultiEdit` no longer deny restoring a comment that still exists in the file's `HEAD`-committed blob — reverting an incidental deletion is no longer permanent.
+
 ## 0.3.0 — 2026-08-25
 
 - Bash commands that rewrite source files in place (`sed -i`, `perl -pi`, `>`/`>>`/`tee` into a source file, inline `python`/`node`/`ruby`/`pwsh` scripts that call a write API) are denied with a pointer to Edit/Write, where the comment rule applies.
