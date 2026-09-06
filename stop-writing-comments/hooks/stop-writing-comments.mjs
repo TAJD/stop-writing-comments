@@ -9,11 +9,11 @@
  */
 import { execFileSync } from 'node:child_process';
 import {
-  appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync,
+  appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
-  basename, dirname, extname, join, relative, resolve,
+  basename, dirname, extname, join, resolve,
 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -321,19 +321,12 @@ function gitOut(cwd, args, extra = {}) {
 
 const normalise = (s) => s.replace(/\r\n/g, '\n');
 
-const realOrSelf = (p) => {
+export function headBlobFor(path) {
   try {
-    return realpathSync(p);
-  } catch {
-    return p;
-  }
-};
-
-export function headBlobFor(cwd, path) {
-  try {
-    const root = realOrSelf(gitOut(cwd, ['rev-parse', '--show-toplevel']));
-    const rel = relative(root, realOrSelf(resolve(path))).replace(/\\/g, '/');
-    return gitOut(root, ['show', `HEAD:${rel}`]);
+    const fileDir = dirname(resolve(path));
+    const prefix = gitOut(fileDir, ['rev-parse', '--show-prefix']);
+    const rel = (prefix + basename(path)).replace(/\\/g, '/');
+    return gitOut(fileDir, ['show', `HEAD:${rel}`]);
   } catch {
     return null;
   }
@@ -458,7 +451,7 @@ function postBash(data, mode) {
 function relaxForMovedOrRestoredComments(decision, newLines, newText, path, cwd, isNewFile) {
   if (newLines.length === 0) return decision;
   const nSplit = splitLines(newText);
-  const headText = isNewFile ? null : headBlobFor(cwd, path);
+  const headText = isNewFile ? null : headBlobFor(path);
   if (headText !== null) {
     const headLineSet = new Set(splitLines(normalise(headText)));
     if (newLines.every((ln) => headLineSet.has(nSplit[ln - 1]))) {
