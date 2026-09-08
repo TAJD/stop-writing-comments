@@ -389,12 +389,26 @@ export function auditChanges(cwd, tree) {
     const abs = join(root, rel);
     if (familyFor(abs) === null || !existsSync(abs) || !statSync(abs).isFile()) continue;
     let oldText = '';
+    let readOld = true;
     try {
       oldText = execFileSync('git', ['show', `${tree}:${rel}`], {
         cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true, timeout: 4000,
+        maxBuffer: 256 * 1024 * 1024,
       });
     } catch {
+      readOld = false;
       oldText = '';
+    }
+    if (!readOld) {
+      let inTree = true;
+      try {
+        execFileSync('git', ['cat-file', '-e', `${tree}:${rel}`], {
+          cwd: root, stdio: 'ignore', windowsHide: true, timeout: 4000,
+        });
+      } catch {
+        inTree = false;
+      }
+      if (inTree) continue;
     }
     const newText = readFileSync(abs, 'utf8');
     if (normalise(oldText) === normalise(newText)) continue;

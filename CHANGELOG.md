@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.3 — 2026-09-08
+
+- Fixed a false-positive class where a single large file poisoned every subsequent Bash audit in a repo. `git show <tree>:<path>` ran with Node's default 1MB `execFileSync` buffer, so any tracked file over roughly 1MB threw `ENOBUFS`; the catch set the previous contents to the empty string, which made the whole file read as newly added and attributed all of its pre-existing comments to the command. The buffer is now 256MB, and a failed read is distinguished from a genuinely new file with `git cat-file -e` rather than assumed to mean "new" — if the path is in the snapshot tree but unreadable, the file is skipped instead of blamed.
+
 ## 0.3.2 — 2026-09-06
 
 - Fixed a false-positive class in the post-Bash audit: a snapshot taken before the command is now discarded (with a skip log entry, no block) if the git worktree root or `HEAD` has moved by the time the command finishes — e.g. the command `cd`'d into a different worktree, or ran a `git checkout`/`fetch` mixed with a non-plumbing verb such as `git status`, which fell outside the existing `git`-plumbing-only fast path. Previously either case could diff the new tree's pre-existing, human-authored comments against the old snapshot and misattribute them to the command.
