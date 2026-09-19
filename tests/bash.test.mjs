@@ -211,6 +211,17 @@ test('audit paths are repo-relative from a nested cwd', () => {
   assert.deepEqual(auditChanges(nested, tree).map((v) => v.path), ['pkg/n.py']);
 });
 
+test('audit does not blame a file too large for the default git show buffer', () => {
+  const d = repo();
+  const big = '// existing\n' + 'const x = 1;\n'.repeat(200_000);
+  writeFileSync(join(d, 'big.ts'), big);
+  git(d, 'add', '-A');
+  git(d, 'commit', '-q', '-m', 'big');
+  const tree = snapshotTree(d);
+  writeFileSync(join(d, 'big.ts'), big + 'const y = 2;\n');
+  assert.deepEqual(auditChanges(d, tree), []);
+});
+
 test('main: post bash blocks when the command added comments', () => {
   const d = repo();
   const s = session();
