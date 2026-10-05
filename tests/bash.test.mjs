@@ -48,8 +48,6 @@ const writeCommands = [
   "perl -pi -e 's/a/b/' lib/a.ex",
   'echo "x = 1" > src/a.py',
   "printf '%s\\n' x >> lib/a.ex",
-  "cat <<'EOF' > a.ts\nconst x = 1;\nEOF",
-  'tee src/a.go <<EOF\npackage x\nEOF',
   "python - <<'PY'\nopen('a.py', 'w').write('x')\nPY",
   'python -c "from pathlib import Path; Path(\'a.py\').write_text(\'x\')"',
   'node -e "require(\'fs\').writeFileSync(\'a.js\', \'x\')"',
@@ -81,6 +79,8 @@ const readCommands = [
   'tee -a $TEMP/notes.sh <<EOF\nls\nEOF',
   `echo x > "${tmpdir()}${tmpdir().includes('\\') ? '\\' : '/'}claude${tmpdir().includes('\\') ? '\\' : '/'}a.py"`,
   `echo x > ${tmpdir().replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`)}/s/a.ex`,
+  "cat <<'EOF' > a.ts\nconst x = 1;\nEOF",
+  'tee src/a.go <<EOF\npackage x\nEOF',
 ];
 
 for (const c of writeCommands) {
@@ -244,6 +244,18 @@ test('main: post bash blocks when the command added comments', () => {
   assert.match(out.reason, /line 2/);
   assert.match(out.reason, /written by humans/);
   assert.match(out.reason, /Edit/);
+});
+
+test('main: heredoc redirect to a new file is allowed pre, then audited post', () => {
+  const d = repo();
+  const s = session();
+  const cmd = "cat <<'EOF' > b.py\nz = 3\nEOF";
+  assert.equal(run(bash(cmd, d, 'PreToolUse', s)).stdout, '');
+  writeFileSync(join(d, 'b.py'), 'z = 3  # from heredoc\n');
+  const r = run(bash(cmd, d, 'PostToolUse', s));
+  const out = JSON.parse(r.stdout);
+  assert.equal(out.decision, 'block');
+  assert.match(out.reason, /b\.py/);
 });
 
 test('main: post bash is silent when nothing changed and the snapshot is consumed', () => {

@@ -289,6 +289,7 @@ const GIT_PLUMBING_RE = /^git\s+(checkout|switch|mv|restore|merge|rebase|cherry-
 const IN_PLACE_RE = /(^|[\s;&|(])(sed\s+(-[a-zA-Z]*i|--in-place)|perl\s+-[a-zA-Z]*i)/m;
 const INTERP_RE = /(^|[\s;&|(])(python3?|py|node|ruby|perl|pwsh|powershell)(\.exe)?\s+(-[ceE]\b|-Command\b|-\s*<<|<<)/m;
 const WRITE_CALL_RE = /\b(writeFileSync|writeFile|write_text|write_bytes|Set-Content|Add-Content|Out-File|File\.write|IO\.write)\b|\bopen\([^)]*['"][wax]\+?b?['"]/;
+const HEREDOC_RE = /<<-?\s*['"]?\w+['"]?/;
 
 const extAlternation = () =>
   [...new Set([...FAMILY_BY_EXT.keys(), ...Object.keys(state.extraExtensions)])].join('|');
@@ -313,13 +314,15 @@ export function bashWriteIntent(command) {
   if (typeof command !== 'string') return null;
   const m = command.match(IN_PLACE_RE);
   if (m) return m[2].split(/\s+/).slice(0, 2).join(' ');
-  const exts = extAlternation();
-  const target = `["']?([^\\s"'|;&<>]+\\.(${exts}))(?=["']?(\\s|$|[;&|)]))`;
-  for (const r of command.matchAll(new RegExp(`(^|[^>&\\d<])>{1,2}\\s*${target}`, 'gm'))) {
-    if (familyFor(r[2]) !== null && !isTempPath(r[2])) return `redirect to ${r[2]}`;
-  }
-  for (const t of command.matchAll(new RegExp(`(^|[\\s;&|(])tee\\s+(-[ai]\\s+)*${target}`, 'gm'))) {
-    if (familyFor(t[3]) !== null && !isTempPath(t[3])) return `tee ${t[3]}`;
+  if (!HEREDOC_RE.test(command)) {
+    const exts = extAlternation();
+    const target = `["']?([^\\s"'|;&<>]+\\.(${exts}))(?=["']?(\\s|$|[;&|)]))`;
+    for (const r of command.matchAll(new RegExp(`(^|[^>&\\d<])>{1,2}\\s*${target}`, 'gm'))) {
+      if (familyFor(r[2]) !== null && !isTempPath(r[2])) return `redirect to ${r[2]}`;
+    }
+    for (const t of command.matchAll(new RegExp(`(^|[\\s;&|(])tee\\s+(-[ai]\\s+)*${target}`, 'gm'))) {
+      if (familyFor(t[3]) !== null && !isTempPath(t[3])) return `tee ${t[3]}`;
+    }
   }
   if (INTERP_RE.test(command) && WRITE_CALL_RE.test(command)) return 'a script that writes a file';
   return null;
