@@ -56,6 +56,9 @@ const writeCommands = [
   'pwsh -c "Set-Content a.ps1 \'x\'"',
   'pwsh -c "\'x\' | Out-File a.ps1"',
   'ruby -e "File.write(\'a.rb\', \'x\')"',
+  'echo x > /tmp/a.py; echo y > src/b.py',
+  'echo x > /tmp/../repo/a.py',
+  "sed -i 's/a/b/' /tmp/a.py",
 ];
 
 const readCommands = [
@@ -72,6 +75,12 @@ const readCommands = [
   'git diff HEAD >/dev/null',
   'npm run build 2> err.log',
   'ls src/*.py',
+  "cat > \"$TMPDIR/x.py\" <<'EOF'\nx = 1  # scratch\nEOF",
+  'echo x > ${TMPDIR}/a.ts',
+  'echo x > /tmp/a.py',
+  'tee -a $TEMP/notes.sh <<EOF\nls\nEOF',
+  `echo x > "${tmpdir()}${tmpdir().includes('\\') ? '\\' : '/'}claude${tmpdir().includes('\\') ? '\\' : '/'}a.py"`,
+  `echo x > ${tmpdir().replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`)}/s/a.ex`,
 ];
 
 for (const c of writeCommands) {

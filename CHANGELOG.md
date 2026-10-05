@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.4 — 2026-10-05
+
+- Bash redirects and `tee` into the temp directory (`$TMPDIR`, `$TEMP`, `/tmp`, or any path under `os.tmpdir()`, which covers the Claude Code session scratchpad) are no longer pre-denied. Those files sit outside any repo, so the post-command audit never sees them and the deny only forced scratch scripts through Edit/Write. Paths containing `/../` are not treated as temp. `sed -i`/`perl -i` stay denied everywhere.
+- Every redirect and `tee` target in a command is now checked, not just the first, so `echo x > /tmp/a.py; echo y > src/b.py` is still denied.
+
 ## 0.3.3 — 2026-09-08
 
 - Fixed a false-positive class where a single large file poisoned every subsequent Bash audit in a repo. `git show <tree>:<path>` ran with Node's default 1MB `execFileSync` buffer, so any tracked file over roughly 1MB threw `ENOBUFS`; the catch set the previous contents to the empty string, which made the whole file read as newly added and attributed all of its pre-existing comments to the command. The buffer is now 256MB, and a failed read is distinguished from a genuinely new file with `git cat-file -e` rather than assumed to mean "new" — if the path is in the snapshot tree but unreadable, the file is skipped instead of blamed.
