@@ -299,16 +299,28 @@ export function isGitPlumbingOnly(command) {
   return parts.length > 0 && parts.every((p) => GIT_PLUMBING_RE.test(p));
 }
 
+export function isTempPath(path) {
+  const p = path.replace(/\\/g, '/');
+  if (p.includes('/../')) return false;
+  if (/^\$\{?(TMPDIR|TEMP|TMP)\}?\//.test(p) || p.startsWith('/tmp/')) return true;
+  const t = tmpdir().replace(/\\/g, '/').replace(/\/$/, '').toLowerCase();
+  const msys = t.replace(/^([a-z]):/, (_, d) => `/${d}`);
+  const lower = p.toLowerCase();
+  return lower.startsWith(`${t}/`) || lower.startsWith(`${msys}/`);
+}
+
 export function bashWriteIntent(command) {
   if (typeof command !== 'string') return null;
   const m = command.match(IN_PLACE_RE);
   if (m) return m[2].split(/\s+/).slice(0, 2).join(' ');
   const exts = extAlternation();
   const target = `["']?([^\\s"'|;&<>]+\\.(${exts}))(?=["']?(\\s|$|[;&|)]))`;
-  const redirect = command.match(new RegExp(`(^|[^>&\\d<])>{1,2}\\s*${target}`, 'm'));
-  if (redirect && familyFor(redirect[2]) !== null) return `redirect to ${redirect[2]}`;
-  const tee = command.match(new RegExp(`(^|[\\s;&|(])tee\\s+(-[ai]\\s+)*${target}`, 'm'));
-  if (tee && familyFor(tee[3]) !== null) return `tee ${tee[3]}`;
+  for (const r of command.matchAll(new RegExp(`(^|[^>&\\d<])>{1,2}\\s*${target}`, 'gm'))) {
+    if (familyFor(r[2]) !== null && !isTempPath(r[2])) return `redirect to ${r[2]}`;
+  }
+  for (const t of command.matchAll(new RegExp(`(^|[\\s;&|(])tee\\s+(-[ai]\\s+)*${target}`, 'gm'))) {
+    if (familyFor(t[3]) !== null && !isTempPath(t[3])) return `tee ${t[3]}`;
+  }
   if (INTERP_RE.test(command) && WRITE_CALL_RE.test(command)) return 'a script that writes a file';
   return null;
 }
