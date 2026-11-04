@@ -290,6 +290,12 @@ const IN_PLACE_RE = /(^|[\s;&|(])(sed\s+(-[a-zA-Z]*i|--in-place)|perl\s+-[a-zA-Z
 const INTERP_RE = /(^|[\s;&|(])(python3?|py|node|ruby|perl|pwsh|powershell)(\.exe)?\s+(-[ceE]\b|-Command\b|-\s*<<|<<)/m;
 const WRITE_CALL_RE = /\b(writeFileSync|writeFile|write_text|write_bytes|Set-Content|Add-Content|Out-File|File\.write|IO\.write)\b|\bopen\([^)]*['"][wax]\+?b?['"]/;
 const HEREDOC_RE = /<<-?\s*['"]?\w+['"]?/;
+const QUOTED_RE = /((?:\b(?:sh|bash|zsh|dash|ksh)(?:\.exe)?(?:\s+-[a-zA-Z]+)*\s+-[a-zA-Z]*c|\beval)\s+)?('[^']*'|"(?:\\.|[^"\\])*")/g;
+
+export function maskQuoted(command) {
+  return command.replace(QUOTED_RE, (_, run, q) =>
+    run ? `${run} ${q.slice(1, -1)} ` : q[0] + ' '.repeat(q.length - 2) + q[0]);
+}
 
 const extAlternation = () =>
   [...new Set([...FAMILY_BY_EXT.keys(), ...Object.keys(state.extraExtensions)])].join('|');
@@ -312,7 +318,7 @@ export function isTempPath(path) {
 
 export function bashWriteIntent(command) {
   if (typeof command !== 'string') return null;
-  const m = command.match(IN_PLACE_RE);
+  const m = maskQuoted(command).match(IN_PLACE_RE);
   if (m) return m[2].split(/\s+/).slice(0, 2).join(' ');
   if (!HEREDOC_RE.test(command)) {
     const exts = extAlternation();

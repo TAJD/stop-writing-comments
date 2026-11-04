@@ -57,6 +57,9 @@ const writeCommands = [
   'echo x > /tmp/a.py; echo y > src/b.py',
   'echo x > /tmp/../repo/a.py',
   "sed -i 's/a/b/' /tmp/a.py",
+  "bash -c \"sed -i 's/a/b/' a.py\"",
+  "bash -lc 'perl -pi -e s/a/b/ lib/a.ex'",
+  "eval \"sed -i 's/a/b/' a.py\"",
 ];
 
 const readCommands = [
@@ -81,6 +84,10 @@ const readCommands = [
   `echo x > ${tmpdir().replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/${d.toLowerCase()}`)}/s/a.ex`,
   "cat <<'EOF' > a.ts\nconst x = 1;\nEOF",
   'tee src/a.go <<EOF\npackage x\nEOF',
+  "grep -n -iE 'pop|sed -i|done' worker-next.sh",
+  'rg -n "perl -pi -e" docs/',
+  "grep -c 'sed -i' a.sh",
+  'git log --grep="sed --in-place"',
 ];
 
 for (const c of writeCommands) {

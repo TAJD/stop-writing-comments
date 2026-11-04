@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.6 — 2026-11-04
+
+- `sed -i`/`perl -i` inside a quoted argument (e.g. a search pattern such as `grep -E 'pop|sed -i'`) no longer causes a read-only command to be denied as an in-place edit. Quoted text is ignored by the in-place check.
+- A quoted script that a shell or `eval` runs (`bash -c "sed -i …"`, `bash -lc '…'`, `eval "…"`) is still scanned. Before, these got through because the quote came straight before `sed`; they are now denied like the bare command.
+
 ## 0.3.5 — 2026-10-05
 
 - A `Bash` heredoc that redirects or `tee`s its content into a file (e.g. `cat <<EOF > script.sh`) is no longer denied pre-emptively as an "in-place edit." It now goes through the same pre/post snapshot audit as any other command, which already diffs the resulting file correctly. `sed -i`/`perl -i` and interpreter one-liners that call a write API are still denied — those aren't affected by this change.
