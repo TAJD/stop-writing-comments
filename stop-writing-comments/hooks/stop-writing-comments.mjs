@@ -11,7 +11,7 @@ import { execFileSync } from 'node:child_process';
 import {
   appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import {
   basename, dirname, extname, join, resolve,
 } from 'node:path';
@@ -316,21 +316,75 @@ export function isTempPath(path) {
   return lower.startsWith(`${t}/`) || lower.startsWith(`${msys}/`);
 }
 
-export function bashWriteIntent(command) {
+const WRITE_CALL_G = new RegExp(WRITE_CALL_RE.source, 'g');
+const WRITE_TARGET_RES = [
+  /\bopen\(\s*['"]([^'"]+)['"]\s*,\s*['"][wax]/g,
+  /\bwriteFile(?:Sync)?\(\s*['"]([^'"]+)['"]/g,
+  /\bPath\(\s*['"]([^'"]+)['"]\s*\)\.write_(?:text|bytes)\b/g,
+  /\b(?:Set-Content|Add-Content|Out-File)\s+(?:-(?:Path|FilePath|LiteralPath)\s+)?['"]([^'"]+)['"]/g,
+];
+
+function insideWorkTree(file) {
+  let dir = dirname(file);
+  for (;;) {
+    if (existsSync(join(dir, '.git'))) return true;
+    const up = dirname(dir);
+    if (up === dir) return false;
+    dir = up;
+  }
+}
+
+function outsideWorkTree(path, cwd) {
+  const home = homedir();
+  const p = path.replace(/^~(?=\/|\\|$)/, home).replace(/^\$\{?HOME\}?(?=\/|\\|$)/, home)
+    .replace(/^\/([a-zA-Z])\//, (_, d) => (process.platform === 'win32' ? `${d}:/` : `/${d}/`));
+  if (/[$`*?]/.test(p)) return isTempPath(path);
+  return !insideWorkTree(resolve(cwd, p));
+}
+
+function inPlaceOperands(command, from) {
+  const toks = command.slice(from).match(/'[^']*'|"(?:\\.|[^"\\])*"|[;&|\n]|[^\s;&|]+/g) || [];
+  const operands = [];
+  let scripted = false;
+  for (const t of toks.slice(1)) {
+    if (/^[;&|\n]$/.test(t) || /^\d*[<>]/.test(t)) break;
+    const w = t.replace(/^['"]|['"]$/g, '');
+    if (scripted === 'next') scripted = true;
+    else if (/^-[a-zA-Z]*[efE]$|^--(expression|file)$/.test(w)) scripted = 'next';
+    else if (w.startsWith('-')) continue;
+    else if (!scripted) scripted = true;
+    else operands.push(w);
+  }
+  return operands;
+}
+
+function scriptTargets(command) {
+  const calls = command.match(WRITE_CALL_G)?.length ?? 0;
+  const targets = WRITE_TARGET_RES.flatMap((re) => [...command.matchAll(re)].map((x) => x[1]));
+  return targets.length === calls ? targets : null;
+}
+
+export function bashWriteIntent(command, cwd = process.cwd()) {
   if (typeof command !== 'string') return null;
   const m = maskQuoted(command).match(IN_PLACE_RE);
-  if (m) return m[2].split(/\s+/).slice(0, 2).join(' ');
+  if (m) {
+    const ops = inPlaceOperands(command, m.index + m[1].length);
+    if (!ops.length || !ops.every((o) => outsideWorkTree(o, cwd))) return m[2].split(/\s+/).slice(0, 2).join(' ');
+  }
   if (!HEREDOC_RE.test(command)) {
     const exts = extAlternation();
     const target = `["']?([^\\s"'|;&<>]+\\.(${exts}))(?=["']?(\\s|$|[;&|)]))`;
     for (const r of command.matchAll(new RegExp(`(^|[^>&\\d<])>{1,2}\\s*${target}`, 'gm'))) {
-      if (familyFor(r[2]) !== null && !isTempPath(r[2])) return `redirect to ${r[2]}`;
+      if (familyFor(r[2]) !== null && !isTempPath(r[2]) && !outsideWorkTree(r[2], cwd)) return `redirect to ${r[2]}`;
     }
     for (const t of command.matchAll(new RegExp(`(^|[\\s;&|(])tee\\s+(-[ai]\\s+)*${target}`, 'gm'))) {
-      if (familyFor(t[3]) !== null && !isTempPath(t[3])) return `tee ${t[3]}`;
+      if (familyFor(t[3]) !== null && !isTempPath(t[3]) && !outsideWorkTree(t[3], cwd)) return `tee ${t[3]}`;
     }
   }
-  if (INTERP_RE.test(command) && WRITE_CALL_RE.test(command)) return 'a script that writes a file';
+  if (INTERP_RE.test(command) && WRITE_CALL_RE.test(command)) {
+    const targets = scriptTargets(command);
+    if (!targets || !targets.every((t) => outsideWorkTree(t, cwd))) return 'a script that writes a file';
+  }
   return null;
 }
 
@@ -449,7 +503,7 @@ function preBash(data, mode) {
   const command = data.tool_input?.command;
   if (typeof command !== 'string') return;
   const cwd = data.cwd || process.cwd();
-  const intent = bashWriteIntent(command);
+  const intent = bashWriteIntent(command, cwd);
   if (intent) {
     log(process.env.STOP_WRITING_COMMENTS_LOG, 'bash', 0, 0, mode === 'warn' ? 'warn-deny' : 'deny');
     if (mode === 'warn') return;
