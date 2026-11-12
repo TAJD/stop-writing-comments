@@ -55,8 +55,8 @@ const writeCommands = [
   'pwsh -c "\'x\' | Out-File a.ps1"',
   'ruby -e "File.write(\'a.rb\', \'x\')"',
   'echo x > /tmp/a.py; echo y > src/b.py',
-  'echo x > /tmp/../repo/a.py',
-  "sed -i 's/a/b/' /tmp/a.py",
+  'echo x > src/../a.py',
+  "sed -i 's/a/b/' src/../a.py",
   "bash -c \"sed -i 's/a/b/' a.py\"",
   "bash -lc 'perl -pi -e s/a/b/ lib/a.ex'",
   "eval \"sed -i 's/a/b/' a.py\"",
@@ -109,8 +109,25 @@ test('bashWriteIntent honours configured extensions', () => {
   hook.configure({});
 });
 
+test('bashWriteIntent allows in-place edits and writes outside any git work tree', () => {
+  const out = tmp();
+  const inside = repo();
+  const f = join(out, 'lane.txt').replace(/\\/g, '/');
+  const g = join(inside, 'a.py').replace(/\\/g, '/');
+  assert.equal(bashWriteIntent(`sed -i 's/a/b/' ${f}`, inside), null);
+  assert.equal(bashWriteIntent(`sed -i -e 's/a/b/' ${f}`, inside), null);
+  assert.equal(typeof bashWriteIntent(`sed -i 's/a/b/' ${g}`, out), 'string');
+  assert.equal(typeof bashWriteIntent(`sed -i 's/a/b/' a.py`, inside), 'string');
+  assert.equal(typeof bashWriteIntent(`sed -i 's/a/b/' ${f} ${g}`, out), 'string');
+  assert.equal(typeof bashWriteIntent("sed -i 's/a/b/'", out), 'string');
+  assert.equal(bashWriteIntent(`python3 -c "open('${f}', 'w').write('x')"`, inside), null);
+  assert.equal(typeof bashWriteIntent(`python3 -c "open('${g}', 'w').write('x')"`, out), 'string');
+  assert.equal(typeof bashWriteIntent(`python3 -c "open(p, 'w').write('x')"`, out), 'string');
+  assert.equal(bashWriteIntent(`echo x > ${f.replace('lane.txt', 'a.py')}`, inside), null);
+});
+
 test('main: pre bash with in-place edit denies and redirects to Edit/Write', () => {
-  const r = run(bash("sed -i 's/a/b/' a.py", tmp()));
+  const r = run(bash("sed -i 's/a/b/' a.py", repo()));
   assert.equal(r.code, 0);
   const out = JSON.parse(r.stdout).hookSpecificOutput;
   assert.equal(out.hookEventName, 'PreToolUse');

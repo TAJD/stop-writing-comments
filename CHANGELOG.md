@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.7 — 2026-11-12
+
+- In-place edits (`sed -i`, `perl -pi`), interpreter scripts that write a literal path, and Bash redirects/`tee` are now allowed when every target resolves outside any git work tree (state files, scratch dirs). A target inside a work tree, or one that can't be determined (no literal path, unexpanded variable), is still denied.
+
 ## 0.3.6 — 2026-11-04
 
 - `sed -i`/`perl -i` inside a quoted argument (e.g. a search pattern such as `grep -E 'pop|sed -i'`) no longer causes a read-only command to be denied as an in-place edit. Quoted text is ignored by the in-place check.
